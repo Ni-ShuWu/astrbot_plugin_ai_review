@@ -156,6 +156,43 @@ class PlatformExecutor:
         except Exception as exc:
             return f"合并转发发送失败: {exc!s}"
 
+    async def get_group_admins(
+        self,
+        platform_id: str,
+        group_id: str,
+    ) -> list[str]:
+        """获取群主与群管理员 QQ 列表（OneBot role 过滤）。
+
+        Args:
+            platform_id: 平台实例 ID。
+            group_id: 群号。
+
+        Returns:
+            群主/群管 QQ 字符串列表；查询失败返回空列表。
+        """
+        try:
+            adapter = self._context.get_platform_inst(platform_id)
+            if adapter is None:
+                return []
+            client = getattr(adapter, "get_client", None)
+            bot = client() if callable(client) else getattr(adapter, "bot", None)
+            if bot is None or not hasattr(bot, "call_action"):
+                return []
+            members = await bot.call_action(
+                "get_group_member_list", group_id=group_id
+            )
+        except Exception as exc:
+            logger.warning("[AI审核] 获取群管理列表失败（群 %s）：%s", group_id, exc)
+            return []
+        if not isinstance(members, list):
+            return []
+        return [
+            str(member.get("user_id"))
+            for member in members
+            if isinstance(member, dict)
+            and member.get("role") in ("owner", "admin")
+        ]
+
     async def _call(self, platform_id: str, action: str, **params: Any) -> str:
         """调用平台 OneBot 动作。
 

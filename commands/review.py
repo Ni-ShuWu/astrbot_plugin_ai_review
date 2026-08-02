@@ -1,6 +1,6 @@
 """AI 审核命令（mixin，由 main.py 的 Star 继承注册）。
 
-命令（均为管理员权限）：
+命令（均为本群群主/群管或 AstrBot 管理员权限）：
 - /review @成员 | uid：主动审核指定用户
 - /review recent：审核最近聊天记录
 - /review provider：列出 AstrBot 已接入的模型
@@ -8,13 +8,15 @@
 - /review detail <id>：查看任务详情
 - /review pass <id>：通过并执行处罚
 - /review reject <id>：拒绝任务
-- /review rule list|add|del|disable|enable：管理正则规则
+- /review rule list|pending|approve|deny|add|del|disable|enable：管理正则规则
+- /review push group|admin|off|view：设置本群推送方式
 
 宿主 Star 需提供：self.workflow / self.queue / self.config / self.punisher / self.rules。
 """
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING
 
 from astrbot.api.event import AstrMessageEvent
@@ -23,14 +25,72 @@ from astrbot.api.message_components import At
 from ..models import ReviewLog
 from ..utils.logger import get_logger, log_event, log_review, review_context
 
+logger = get_logger()
+
 if TYPE_CHECKING:
     from ..models import ReviewTask
 
 _PER_PAGE = 10
+# 群管理列表缓存时长（秒）：避免每条命令都调用 OneBot get_group_member_list
+_GROUP_ADMIN_CACHE_TTL = 300
 
 
 class ReviewCommandMixin:
     """/review 命令实现。"""
+
+    async def _check_review_permission(
+        self,
+        event: AstrMessageEvent,
+    ) -> tuple[bool, str]:
+        """按发送者 QQ 鉴权：AstrBot 管理员或本群群主/群管可执行 /review。
+
+        bot 可能被部署在多个群，各群审批应由本群群主/群管完成；
+        群管列表通过 OneBot get_group_member_list 按 role 过滤获取（带缓存）。
+
+        Returns:
+            (是否通过, 拒绝时的提示文本)。
+        """
+        if event.is_admin():
+            return True, ""
+        group_id = event.get_group_id()
+        sender_id = event.get_sender_id()
+        if not group_id or not sender_id:
+            return False, "❌ 权限不足：请在群内使用，且仅本群群主/群管理员可执行。"
+        admins = await self._get_group_admins_cached(event)
+        if sender_id in admins:
+            return True, ""
+        return False, "❌ 权限不足：仅本群群主/群管理员可执行 /review 命令。"
+
+    async def _get_group_admins_cached(
+        self,
+        event: AstrMessageEvent,
+    ) -> set[str]:
+        """获取本群群主/群管 QQ 集合（5 分钟缓存）。"""
+        group_id = event.get_group_id()
+        cache = getattr(self, "_group_admin_cache", None)
+        if cache is not None:
+            cached = cache.get(group_id)
+            if cached and time.time() - cached[0] < _GROUP_ADMIN_CACHE_TTL:
+                return cached[1]
+        admins: set[str] = set()
+        executor = getattr(self, "executor", None)
+        if executor is not None:
+            try:
+                admins = set(
+                    await executor.get_group_admins(
+                        event.get_platform_id(), group_id
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "[AI审核] 群管列表查询异常，按仅管理员可审批降级（群 %s）。",
+                    group_id,
+                    exc_info=True,
+                )
+                admins = set()
+        if cache is not None:
+            cache[group_id] = (time.time(), admins)
+        return admins
 
     async def _cmd_review(
         self,

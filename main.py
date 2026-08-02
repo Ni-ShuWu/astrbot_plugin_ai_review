@@ -54,6 +54,7 @@ class AiReviewPlugin(ReviewCommandMixin, ConfigCommandMixin, Star):
         super().__init__(context, config)
         self._bg_tasks: set[asyncio.Task] = set()
         self._terminating = False
+        self._group_admin_cache: dict[str, tuple[float, set[str]]] = {}
         self._kv = KVStore(self.get_kv_data, self.put_kv_data)
         self.config = ConfigManager(config if config else {})
         get_config = self._get_config
@@ -100,7 +101,7 @@ class AiReviewPlugin(ReviewCommandMixin, ConfigCommandMixin, Star):
             await asyncio.gather(*tasks, return_exceptions=True)
 
     @filter.command("review")
-    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.permission_type(filter.PermissionType.MEMBER)
     async def cmd_review(
         self,
         event: AstrMessageEvent,
@@ -111,7 +112,13 @@ class AiReviewPlugin(ReviewCommandMixin, ConfigCommandMixin, Star):
 
         AstrBot 按 handler 的 __module__ 与插件主模块路径匹配来绑定插件实例，
         因此指令入口必须定义在本文件（main.py），mixin 中的逻辑经此委托。
+        入口权限放宽到群成员，实际按发送者 QQ 鉴权：本群群主/群管或
+        AstrBot 管理员可执行（bot 常被部署在多个群，各群审批由本群管理完成）。
         """
+        ok, message = await self._check_review_permission(event)
+        if not ok:
+            yield event.plain_result(message)
+            return
         async for result in self._cmd_review(event, target, sub):
             yield result
 

@@ -53,7 +53,7 @@ if "astrbot" not in sys.modules:
 
     _filter = types.ModuleType("astrbot.api.event.filter")
     _filter.EventMessageType = types.SimpleNamespace(GROUP_MESSAGE="group")
-    _filter.PermissionType = types.SimpleNamespace(ADMIN="admin")
+    _filter.PermissionType = types.SimpleNamespace(ADMIN="admin", MEMBER="member")
     _filter.event_message_type = lambda *a, **k: (lambda fn: fn)
     _filter.command = lambda *a, **k: (lambda fn: fn)
     _filter.permission_type = lambda *a, **k: (lambda fn: fn)
@@ -1276,6 +1276,109 @@ class OutputFormatTest(unittest.TestCase):
         self.assertEqual(cfg.get("regex_forward_threshold"), 5)
         ok, _ = asyncio.run(cfg.set_value("regex_forward_threshold", "0"))
         self.assertTrue(ok)  # 0 = 始终文本
+
+
+class _AdminStubEvent:
+    """满足 _check_review_permission 最小接口的事件桩。"""
+
+    def __init__(
+        self,
+        is_admin: bool = False,
+        sender: str = "10001",
+        group: str = "g1",
+    ) -> None:
+        self._is_admin = is_admin
+        self._sender = sender
+        self._group = group
+
+    def is_admin(self) -> bool:
+        return self._is_admin
+
+    def get_group_id(self) -> str:
+        return self._group
+
+    def get_sender_id(self) -> str:
+        return self._sender
+
+    def get_platform_id(self) -> str:
+        return "aiocqhttp"
+
+
+class _FakeAdminExecutor:
+    """模拟 PlatformExecutor.get_group_admins 并记录调用。"""
+
+    def __init__(self, admins: list[str]) -> None:
+        self.admins = set(admins)
+        self.calls: list[str] = []
+
+    async def get_group_admins(self, platform_id: str, group_id: str) -> list[str]:
+        self.calls.append(group_id)
+        return list(self.admins)
+
+
+class ReviewPermissionTest(unittest.TestCase):
+    """/review 命令按发送者 QQ 鉴权：本群群主/群管或 AstrBot 管理员。"""
+
+    @staticmethod
+    def _make_mixin(executor: _FakeAdminExecutor) -> ReviewCommandMixin:
+        mixin = object.__new__(ReviewCommandMixin)
+        mixin.executor = executor
+        mixin._group_admin_cache = {}
+        return mixin
+
+    def test_astrbot_admin_always_allowed(self) -> None:
+        mixin = self._make_mixin(_FakeAdminExecutor([]))
+        ok, _ = asyncio.run(
+            mixin._check_review_permission(_AdminStubEvent(is_admin=True))
+        )
+        self.assertTrue(ok)
+
+    def test_group_admin_allowed(self) -> None:
+        mixin = self._make_mixin(_FakeAdminExecutor(["10001"]))
+        ok, _ = asyncio.run(
+            mixin._check_review_permission(_AdminStubEvent(sender="10001"))
+        )
+        self.assertTrue(ok)
+
+    def test_regular_member_denied(self) -> None:
+        mixin = self._make_mixin(_FakeAdminExecutor(["20002"]))
+        ok, message = asyncio.run(
+            mixin._check_review_permission(_AdminStubEvent(sender="10001"))
+        )
+        self.assertFalse(ok)
+        self.assertIn("权限不足", message)
+
+    def test_query_failure_denies_non_admin(self) -> None:
+        class _FailingExecutor:
+            async def get_group_admins(self, platform_id, group_id):
+                raise RuntimeError("network down")
+
+        mixin = self._make_mixin(_FailingExecutor())  # type: ignore[arg-type]
+        ok, _ = asyncio.run(
+            mixin._check_review_permission(_AdminStubEvent(sender="10001"))
+        )
+        self.assertFalse(ok)
+
+    def test_cache_avoids_repeat_query(self) -> None:
+        executor = _FakeAdminExecutor(["10001"])
+        mixin = self._make_mixin(executor)
+        for _ in range(3):
+            asyncio.run(
+                mixin._check_review_permission(_AdminStubEvent(sender="10001"))
+            )
+        self.assertEqual(len(executor.calls), 1)
+
+    def test_cache_expires_and_reloads(self) -> None:
+        executor = _FakeAdminExecutor(["10001"])
+        mixin = self._make_mixin(executor)
+        asyncio.run(
+            mixin._check_review_permission(_AdminStubEvent(sender="10001"))
+        )
+        mixin._group_admin_cache["g1"] = (0.0, set())  # 强制过期
+        asyncio.run(
+            mixin._check_review_permission(_AdminStubEvent(sender="10001"))
+        )
+        self.assertEqual(len(executor.calls), 2)
 
 
 if __name__ == "__main__":
