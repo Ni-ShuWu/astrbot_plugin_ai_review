@@ -91,6 +91,12 @@
     "hint": "审核输出的一致性控制，0~2；建议保持低温度（默认 0.3）",
     "default": 0.3
   },
+  "notify_throttle_seconds": {
+    "type": "int",
+    "description": "告警通知去重窗口（秒）",
+    "hint": "相同内容的异常告警在窗口期内只通知一次，防止模型故障时刷屏；0 表示不去重",
+    "default": 300
+  },
   "enable_second_review": {
     "type": "bool",
     "description": "启用二次审核",
