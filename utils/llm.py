@@ -140,15 +140,15 @@ class LLMClient:
         except Exception:
             logger.warning("发送 AI 调用异常通知失败。", exc_info=True)
 
-    async def chat(
+    async def chat_ex(
         self,
         system_prompt: str,
         user_prompt: str,
         output_prompt: str,
         umo: str,
         provider_id: str = "",
-    ) -> str | None:
-        """调用模型完成一次文本生成。
+    ) -> tuple[str | None, str]:
+        """调用模型完成一次文本生成，并返回本次实际使用的 Provider ID。
 
         Args:
             system_prompt: 系统提示词（审核规则）。
@@ -159,12 +159,14 @@ class LLMClient:
                 llm_provider_id 配置或会话默认模型。
 
         Returns:
-            模型返回的纯文本；无可用模型或调用失败时返回 None。
+            (模型返回的纯文本, 本次调用实际使用的 Provider ID)。
+            无可用模型或调用失败时文本为 None；Provider 元数据不可读时
+            ID 为空字符串。ID 由本次调用确定，不受并发调用影响。
         """
         self._sync_config()
         provider = await self._resolve_provider(umo, provider_id)
         if provider is None:
-            return None
+            return None, ""
         prompt = f"{user_prompt}\n\n{output_prompt}"
         try:
             provider_id = provider.meta().id
@@ -179,11 +181,8 @@ class LLMClient:
         if response is None:
             log_event("llm_call_failed", provider=provider_id, umo=umo)
             logger.error("[AI审核] 模型返回为空，本次审核结束。")
-            return None
-        try:
-            self._last_provider_id = provider.meta().id
-        except Exception:
-            self._last_provider_id = ""
+            return None, provider_id
+        self._last_provider_id = provider_id
         log_event(
             "llm_call_ok",
             provider=provider_id,
@@ -196,8 +195,38 @@ class LLMClient:
         if completion is None:
             log_event("llm_response_empty", provider=provider_id)
             logger.error("[AI审核] 模型响应缺少文本内容，本次审核结束。")
-            return None
-        return completion or ""
+            return None, provider_id
+        return completion or "", provider_id
+
+    async def chat(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        output_prompt: str,
+        umo: str,
+        provider_id: str = "",
+    ) -> str | None:
+        """调用模型完成一次文本生成（兼容入口，返回纯文本）。
+
+        Args:
+            system_prompt: 系统提示词（审核规则）。
+            user_prompt: 用户提示词（聊天记录）。
+            output_prompt: 输出约束提示词（JSON 格式）。
+            umo: unified_message_origin，用于获取该会话使用的模型。
+            provider_id: 显式指定使用的 Provider ID；留空跟随
+                llm_provider_id 配置或会话默认模型。
+
+        Returns:
+            模型返回的纯文本；无可用模型或调用失败时返回 None。
+        """
+        text, _ = await self.chat_ex(
+            system_prompt,
+            user_prompt,
+            output_prompt,
+            umo,
+            provider_id,
+        )
+        return text
 
     async def _chat_with_retry(
         self,
