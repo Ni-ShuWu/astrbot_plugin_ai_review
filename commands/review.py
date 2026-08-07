@@ -22,6 +22,7 @@ from astrbot.api.message_components import At
 
 from ..config import safe_int
 from ..models import ReviewLog
+from ..review.punishment import PunishmentResult
 from ..utils.logger import get_logger, log_event, log_review, review_context
 
 if TYPE_CHECKING:
@@ -325,7 +326,7 @@ class ReviewCommandMixin:
             return f"✅ 已拒绝任务 #{rejected.task_id}。"
 
     async def _approve_task(self, event: AstrMessageEvent, task: "ReviewTask") -> str:
-        """通过任务并执行处罚。"""
+        """通过任务并执行处罚；处罚失败时回滚任务为待处理。"""
         admin_id = event.get_sender_id()
         approved = await self.queue.approve(task.task_id, admin_id)
         if approved is None:
@@ -336,7 +337,24 @@ class ReviewCommandMixin:
             task_id=approved.task_id,
             provider=approved.llm_provider,
         ):
-            punishment_msg = await self._execute_punishment(approved, admin_id)
+            punishment_result = await self._execute_punishment(approved, admin_id)
+            if punishment_result is not None and punishment_result.failed:
+                reverted = await self.queue.revert_to_pending(approved.task_id)
+                if reverted is not None:
+                    return (
+                        "❌ 处罚执行失败，任务已恢复为待处理，"
+                        f"可稍后重试：/review pass {approved.task_id}\n"
+                        f"{punishment_result.message}"
+                    )
+                return (
+                    "❌ 处罚执行失败，任务可能已被并发处理，请重新查询。\n"
+                    f"{punishment_result.message}"
+                )
+            punishment_msg = (
+                punishment_result.message
+                if punishment_result is not None
+                else "（未配置处罚执行器，仅记录通过）"
+            )
             await self._record_decision(approved, approved=True)
             await self._feedback_rule(approved, approved=True)
             # 非规则命中任务：异步提炼规则候选（进入待审批池）
@@ -665,13 +683,20 @@ class ReviewCommandMixin:
         self,
         task: "ReviewTask",
         admin_id: str,
-    ) -> str:
-        """处罚执行钩子（由 main.py 注入 punisher）。"""
+    ) -> "PunishmentResult | None":
+        """处罚执行钩子（由 main.py 注入 punisher）。
+
+        Returns:
+            结构化执行结果；未配置处罚执行器时返回 None。
+        """
         punisher = getattr(self, "punisher", None)
         if punisher is None:
-            return "（未配置处罚执行器，仅记录通过）"
+            return None
         if not task.user_id:
-            return "（该任务无目标用户，仅记录通过，跳过处罚执行）"
+            return PunishmentResult(
+                failed=False,
+                message="（该任务无目标用户，仅记录通过，跳过处罚执行）",
+            )
         return await punisher.execute(task, admin_id)
 
     # ---------- 展示 ----------

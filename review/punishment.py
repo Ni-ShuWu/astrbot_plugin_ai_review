@@ -9,6 +9,7 @@ blacklist 走黑库适配器（适配器不可用或未启用时自动跳过）�
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from ..config import safe_int
@@ -33,6 +34,24 @@ DEFAULT_PIPELINES: dict[str, list[str]] = {
         PunishmentType.BLACKLIST.value,
     ],
 }
+
+
+@dataclass
+class PunishmentResult:
+    """处罚流水线的结构化结果。
+
+    Attributes:
+        failed: 任一阶段是否执行失败（平台接口报错）。调用方据此
+            决定回滚任务为待处理，避免处罚失败后任务被永久记录为
+            已通过。
+        message: 展示给管理员的各阶段结果汇总。
+    """
+
+    failed: bool
+    message: str
+
+    def __str__(self) -> str:
+        return self.message
 
 
 class PlatformExecutor:
@@ -267,7 +286,7 @@ class Punisher:
             return MuteStrategy(self._executor, mute_duration)
         return self._stages.get(name)
 
-    async def execute(self, task: ReviewTask, admin_id: str) -> str:
+    async def execute(self, task: ReviewTask, admin_id: str) -> PunishmentResult:
         """按任务建议的处罚类型执行整条流水线。
 
         Args:
@@ -275,13 +294,14 @@ class Punisher:
             admin_id: 确认执行的管理员 ID。
 
         Returns:
-            各阶段执行结果汇总。
+            结构化结果：任一阶段失败时 failed=True（调用方应回滚任务）。
         """
         blacklist_enabled, mute_duration, pipelines = self._config_for(task.group_id)
         stage_names = pipelines.get(task.result.suggestion) or [
             task.result.suggestion
         ]
         lines = []
+        failed = False
         for name in stage_names:
             if name == PunishmentType.BLACKLIST.value and not blacklist_enabled:
                 lines.append("黑库同步未启用（enable_blacklist=false），跳过。")
@@ -290,5 +310,8 @@ class Punisher:
             if stage is None:
                 lines.append(f"[{name}] 未知处罚阶段，已跳过。")
                 continue
-            lines.append(await stage.execute(task, admin_id))
-        return "\n".join(lines)
+            result = await stage.execute(task, admin_id)
+            if not result.success:
+                failed = True
+            lines.append(result.message)
+        return PunishmentResult(failed=failed, message="\n".join(lines))
