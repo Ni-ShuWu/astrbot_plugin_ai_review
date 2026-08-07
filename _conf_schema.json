@@ -91,6 +91,12 @@
     "hint": "审核输出的一致性控制，0~2；建议保持低温度（默认 0.3）",
     "default": 0.3
   },
+  "llm_timeout": {
+    "type": "float",
+    "description": "AI 调用超时（秒）",
+    "hint": "单次模型调用超过该时长会被中断并计入重试，防止模型挂起占满并发槽位；0 表示不超时",
+    "default": 120
+  },
   "enable_second_review": {
     "type": "bool",
     "description": "启用二次审核",
