@@ -277,25 +277,30 @@ class RuleEngine:
         level = max(1, min(3, safe_int(level, 1)))
         note = (note or "").strip()[:50]
         async with self._lock:
-            max_rules = safe_int(self._get_config().get("regex_max_rules"), 200)
-            if len(self._rules) >= max_rules:
-                return False, f"规则数量已达上限（{max_rules}），请先清理。", None
-            for rule in self._rules.values():
-                if rule.pattern == pattern:
-                    return False, "相同正则已存在，请勿重复添加。", None
-            rule = RuleRecord(
-                rule_id=uuid.uuid4().hex[:12],
-                pattern=pattern,
-                source=source,
-                note=note,
-                level=level,
-                status=RuleStatus.OBSERVING if source == "auto" else RuleStatus.ACTIVE,
-            )
-            self._rules[rule.rule_id] = rule
-            self._rebuild_compiled()
-            await self._save()
-        if rule.status is RuleStatus.OBSERVING:
-            logger.info("[AI审核] 新规则 %s 进入观察期：%s", rule.rule_id, pattern)
+            return await self._add_locked(pattern, source, note, level)
+
+    async def _add_locked(self, pattern: str, source: str, note: str, level: int):
+        """在锁内插入一条规则（供 add 与 approve_candidate 复用）。
+
+        调用方必须持有 self._lock。
+        """
+        max_rules = safe_int(self._get_config().get("regex_max_rules"), 200)
+        if len(self._rules) >= max_rules:
+            return False, f"规则数量已达上限（{max_rules}），请先清理。", None
+        for rule in self._rules.values():
+            if rule.pattern == pattern:
+                return False, "相同正则已存在，请勿重复添加。", None
+        rule = RuleRecord(
+            rule_id=uuid.uuid4().hex[:12],
+            pattern=pattern,
+            source=source,
+            note=note,
+            level=level,
+            status=RuleStatus.OBSERVING if source == "auto" else RuleStatus.ACTIVE,
+        )
+        self._rules[rule.rule_id] = rule
+        self._rebuild_compiled()
+        await self._save()
         return True, f"已添加规则 {rule.rule_id}（{rule.status.value}）。", rule
 
     async def delete(self, rule_id: str) -> bool:
@@ -507,7 +512,10 @@ class RuleEngine:
         )
 
     async def approve_candidate(self, candidate_id: str) -> tuple[bool, str]:
-        """批准候选：转入观察期规则并删除候选。
+        """批准候选：转入观察期规则并删除候选（同一临界区完成）。
+
+        检查存在性、创建规则、消费候选在同一把锁内完成，杜绝并发
+        approve/deny 交错导致"拒绝后仍建规则"或重复提示。
 
         Returns:
             (是否成功, 提示信息)。
@@ -516,17 +524,20 @@ class RuleEngine:
             candidate = self._candidates.get(candidate_id)
             if candidate is None:
                 return False, "候选不存在或已被处理。"
-        ok, message, _ = await self.add(
-            candidate.pattern,
-            source="auto",
-            note=candidate.note,
-            level=candidate.level,
-        )
-        if not ok:
-            return False, f"批准失败：{message}"
-        async with self._lock:
+            ok, message, rule = await self._add_locked(
+                candidate.pattern,
+                source="auto",
+                note=candidate.note,
+                level=candidate.level,
+            )
+            if not ok:
+                return False, f"批准失败：{message}"
             self._candidates.pop(candidate_id, None)
             await self._save_candidates()
+        if rule is not None and rule.status is RuleStatus.OBSERVING:
+            logger.info(
+                "[AI审核] 新规则 %s 进入观察期：%s", rule.rule_id, rule.pattern
+            )
         logger.info(
             "[AI审核] 候选 %s 已批准，规则进入观察期：%s",
             candidate_id,
