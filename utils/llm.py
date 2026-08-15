@@ -19,7 +19,6 @@ from ..config import safe_int
 
 _DEFAULT_MAX_CONCURRENCY = 3
 _DEFAULT_TEMPERATURE = 0.3
-_DEFAULT_TIMEOUT = 120  # 单次模型调用超时（秒），0 表示不超时
 _DEFAULT_RETRY_TIMES = 2
 _DEFAULT_RETRY_DELAYS = (2.0, 4.0)
 
@@ -58,7 +57,6 @@ class LLMClient:
         self._semaphore = asyncio.Semaphore(_DEFAULT_MAX_CONCURRENCY)
         self._max_concurrency = _DEFAULT_MAX_CONCURRENCY
         self._temperature = _DEFAULT_TEMPERATURE
-        self._timeout = _DEFAULT_TIMEOUT
         self._retry_times = max(0, int(retry_times))
         self._retry_delays = tuple(retry_delays)
         self._last_provider_id = ""
@@ -84,12 +82,6 @@ class LLMClient:
             )
         except (TypeError, ValueError):
             self._temperature = _DEFAULT_TEMPERATURE
-        try:
-            self._timeout = max(
-                0.0, float(config.get("llm_timeout", _DEFAULT_TIMEOUT))
-            )
-        except (TypeError, ValueError):
-            self._timeout = _DEFAULT_TIMEOUT
 
     async def _resolve_provider(self, umo: str, provider_id: str = "") -> Any | None:
         """解析本次审核使用的对话模型 Provider。
@@ -227,22 +219,13 @@ class LLMClient:
         last_exc: Exception | None = None
         for attempt in range(self._retry_times + 1):
             try:
-                call = provider.text_chat(**kwargs)
-                if self._timeout > 0:
-                    return await asyncio.wait_for(call, timeout=self._timeout)
-                return await call
+                return await provider.text_chat(**kwargs)
             except TypeError as exc:
                 if "temperature" in str(exc) and "temperature" in kwargs:
                     logger.warning(
                         "[AI审核] 当前 Provider 不支持 temperature 参数，已降级重试。"
                     )
                     kwargs.pop("temperature")
-                last_exc = exc
-            except TimeoutError as exc:
-                logger.warning(
-                    "[AI审核] 模型调用超时（%s 秒），本次尝试失败。",
-                    self._timeout,
-                )
                 last_exc = exc
             except Exception as exc:
                 last_exc = exc
@@ -255,11 +238,6 @@ class LLMClient:
             f"[AI审核] 调用模型失败（已重试 {self._retry_times} 次）: "
             f"{last_exc!s}"
         )
-        if isinstance(last_exc, TimeoutError):
-            message = (
-                f"[AI审核] 模型调用超时（{self._timeout:g} 秒，"
-                f"已重试 {self._retry_times} 次），本次审核放弃。"
-            )
         logger.error(message, exc_info=last_exc)
         await self._notify(message)
         return None
