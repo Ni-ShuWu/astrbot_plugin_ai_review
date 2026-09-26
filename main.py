@@ -33,7 +33,7 @@ from .utils.logger import get_logger
 logger = get_logger()
 
 _PLUGIN_NAME = "astrbot_plugin_ai_review"
-_PLUGIN_AUTHOR = "Ni-ShuWu&kelai141"
+_PLUGIN_AUTHOR = "Ni-ShuWu&kelai141&MCMR-JIM"
 _PLUGIN_DESC = "基于 AstrBot 大模型的群聊 AI 审核助手，生成审核建议供管理员确认后执行处罚。"
 _PLUGIN_VERSION = "1.22"
 
