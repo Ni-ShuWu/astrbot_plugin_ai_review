@@ -348,6 +348,20 @@ class ReviewTask:
         """将任务标记为已失效。"""
         self.status = ReviewStatus.EXPIRED
 
+    def revert_to_pending(self) -> None:
+        """将已通过的任务恢复为待处理（处罚失败重试路径）。
+
+        清空处理人/处理时间，并顺延过期时间（保持原任务时长，
+        至少 60 秒），避免恢复后立即过期。
+        """
+        if self.status is not ReviewStatus.APPROVED:
+            return
+        duration = self.expires_at - self.created_at
+        self.status = ReviewStatus.PENDING
+        self.admin_id = ""
+        self.decided_at = None
+        self.expires_at = time.time() + max(duration, 60)
+
 
 @dataclass(slots=True)
 class ReviewLog:

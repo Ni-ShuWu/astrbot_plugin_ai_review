@@ -155,6 +155,20 @@ class ReviewQueue:
             await self._save()
             return task
 
+    async def revert_to_pending(self, task_id: str) -> ReviewTask | None:
+        """将已通过但处罚失败的任务恢复为待处理（支持重试）。
+
+        Returns:
+            恢复后的任务；任务不存在或已非通过状态时返回 None。
+        """
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None or task.status is not ReviewStatus.APPROVED:
+                return None
+            task.revert_to_pending()
+            await self._save()
+            return task
+
     async def pending_count(self) -> int:
         """当前待处理任务数（先清理过期）。"""
         async with self._lock:
