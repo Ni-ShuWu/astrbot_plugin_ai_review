@@ -342,6 +342,17 @@ class _StubLLM:
             self.last_provider_id = provider_id
         return text
 
+    async def chat_ex(
+        self,
+        system: str,
+        user: str,
+        output: str,
+        umo: str,
+        provider_id: str = "",
+    ) -> tuple[str | None, str]:
+        text = await self.chat(system, user, output, umo, provider_id)
+        return text, (provider_id or self.last_provider_id)
+
 
 class _StubGroupEvent:
     """满足 workflow.on_message 最小接口的群消息事件桩。"""
@@ -1727,6 +1738,9 @@ class CooldownTimingTest(unittest.TestCase):
 
             async def chat(self, system, user, output, umo):
                 return None
+
+            async def chat_ex(self, system, user, output, umo, provider_id=""):
+                return None, provider_id or self.last_provider_id
 
         cfg = {
             "enable_passive_review": True,

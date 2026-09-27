@@ -300,11 +300,10 @@ class ReviewWorkflow:
         output = self.prompt.build_output()
         umo = event.unified_msg_origin
 
-        text = await self.llm.chat(system, user, output, umo)
+        text, first_provider = await self.llm.chat_ex(system, user, output, umo)
         if text is None:
             log_event("llm_call_failed", group_id=group_id)
             return None, "llm_failed"
-        first_provider = self.llm.last_provider_id
         result = await parse_with_llm_retry(self.llm, system, user, output, umo, text)
         if result is None:
             log_event("parse_failed", group_id=group_id)
@@ -424,7 +423,9 @@ class ReviewWorkflow:
             provider=second_provider_id or "(会话默认)",
             first_risk=first_result.risk,
         )
-        text = await self.llm.chat(system, user, output, umo, second_provider_id)
+        text, used_provider = await self.llm.chat_ex(
+            system, user, output, umo, second_provider_id
+        )
         if text is None:
             log_event("second_review_failed", provider=second_provider_id)
             return "", "failed"
@@ -434,10 +435,6 @@ class ReviewWorkflow:
         if second is None:
             log_event("second_review_parse_failed", provider=second_provider_id)
             return "", "failed"
-        try:
-            used_provider = self.llm.last_provider_id
-        except Exception:
-            used_provider = second_provider_id
         log_event(
             "second_review_done",
             provider=used_provider,
