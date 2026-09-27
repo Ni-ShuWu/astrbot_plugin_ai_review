@@ -29,6 +29,7 @@ from .review.stats import StatsStore
 from .review.workflow import ReviewWorkflow
 from .utils.llm import LLMClient
 from .utils.logger import get_logger
+from .utils.throttle import NotifyThrottle
 
 logger = get_logger()
 
@@ -54,6 +55,7 @@ class AiReviewPlugin(ReviewCommandMixin, ConfigCommandMixin, Star):
         super().__init__(context, config)
         self._bg_tasks: set[asyncio.Task] = set()
         self._terminating = False
+        self._notify_throttle = NotifyThrottle()
         self._kv = KVStore(self.get_kv_data, self.put_kv_data)
         self.config = ConfigManager(config if config else {})
         get_config = self._get_config
@@ -316,12 +318,17 @@ class AiReviewPlugin(ReviewCommandMixin, ConfigCommandMixin, Star):
         return self.config.effective(group_id)
 
     async def _notify_admin(self, message: str) -> None:
-        """向配置的管理员发送告警消息。
+        """向配置的管理员发送告警消息（同内容按窗口去重，防刷屏）。
 
         Args:
             message: 告警内容。
         """
         try:
+            window = safe_int(self.config.get("notify_throttle_seconds"), 300)
+            self._notify_throttle.window = window
+            if not self._notify_throttle.should_notify(message):
+                logger.debug("[AI审核] 相同告警在节流窗口内，已跳过：%s", message[:80])
+                return
             admin_ids = [str(uid) for uid in self.config.get("admin_qq", [])]
             if not admin_ids:
                 return
