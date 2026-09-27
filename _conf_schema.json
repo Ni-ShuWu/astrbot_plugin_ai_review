@@ -91,6 +91,12 @@
     "hint": "审核输出的一致性控制，0~2；建议保持低温度（默认 0.3）",
     "default": 0.3
   },
+  "review_max_concurrent": {
+    "type": "int",
+    "description": "被动审核并发上限",
+    "hint": "同时进行中的被动审核任务数上限；高峰消息超过上限时直接丢弃，防止后台任务无界堆积",
+    "default": 10
+  },
   "enable_second_review": {
     "type": "bool",
     "description": "启用二次审核",

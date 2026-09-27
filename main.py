@@ -29,6 +29,7 @@ from .review.stats import StatsStore
 from .review.workflow import ReviewWorkflow
 from .utils.llm import LLMClient
 from .utils.logger import get_logger
+from .utils.concurrency import ConcurrencyGate
 
 logger = get_logger()
 
@@ -54,6 +55,9 @@ class AiReviewPlugin(ReviewCommandMixin, ConfigCommandMixin, Star):
         super().__init__(context, config)
         self._bg_tasks: set[asyncio.Task] = set()
         self._terminating = False
+        self._review_gate = ConcurrencyGate(
+            safe_int(self.config.get("review_max_concurrent"), 10)
+        )
         self._kv = KVStore(self.get_kv_data, self.put_kv_data)
         self.config = ConfigManager(config if config else {})
         get_config = self._get_config
@@ -360,5 +364,24 @@ class AiReviewPlugin(ReviewCommandMixin, ConfigCommandMixin, Star):
 
         不在此处做前置判断（含按群覆盖的 review_mode/enable_history），
         统一交给 workflow.on_message 内部判断，避免全局配置漏掉群覆盖。
+        并发上限由 review_max_concurrent 门闩控制：超限消息直接丢弃
+        （背压），避免高峰时后台任务无界堆积。
         """
-        self._spawn(self.workflow.on_message(event))
+        limit = safe_int(self.config.get("review_max_concurrent"), 10)
+        if limit != self._review_gate.limit:
+            self._review_gate.limit = max(1, limit)
+        if not self._review_gate.try_acquire():
+            logger.debug(
+                "[AI审核] 审核并发已达上限（%d），丢弃本次消息。",
+                self._review_gate.limit,
+            )
+            return
+
+        async def _guarded() -> None:
+            try:
+                await self.workflow.on_message(event)
+            finally:
+                self._review_gate.release()
+
+        if self._spawn(_guarded()) is None:
+            self._review_gate.release()
